@@ -19,7 +19,7 @@ DATA_PATH = Path(__file__).parent / "ev_adoption_cleaned.csv"
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("DATA_PATH")
+    df = pd.read_csv(DATA_PATH)
     df["ev_adoption_likelihood"] = pd.Categorical(
         df["ev_adoption_likelihood"], categories=ADOPTION_ORDER, ordered=True
     )
