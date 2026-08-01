@@ -1,7 +1,10 @@
+"""EV Adoption Behavior Analytics Dashboard"""
+
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
@@ -100,6 +103,77 @@ kpi1.metric("Customers (filtered)", f"{len(filtered_df):,}")
 kpi2.metric("% High adoption likelihood", f"{pct_high:.1f}%")
 kpi3.metric("Avg. annual income", f"₹{avg_income:,.0f}")
 
+st.markdown("")
+ov1, ov2 = st.columns(2)
+
+with ov1:
+    split_counts = (
+        filtered_df["ev_adoption_likelihood"]
+        .value_counts()
+        .reindex(ADOPTION_ORDER)
+        .reset_index()
+    )
+    split_counts.columns = ["Likelihood", "Count"]
+    fig_split = px.pie(
+        split_counts,
+        names="Likelihood",
+        values="Count",
+        hole=0.62,
+        color="Likelihood",
+        color_discrete_map=COLOR_MAP,
+        template=PLOT_TEMPLATE,
+        title="Adoption Likelihood Split",
+    )
+    fig_split.update_traces(textinfo="percent+label")
+    st.plotly_chart(fig_split, use_container_width=True)
+
+with ov2:
+    # Diverging bar: compare High-adopter vs Low-adopter averages on the factors
+    # that matter most, including the composite features -- one bar extends right
+    # (High), the other left (Low, plotted as a negative value), so the visual gap
+    # between the two tips shows how much a factor actually separates the groups.
+    compare_cols = {
+        "EV Knowledge": "ev_knowledge_score",
+        "Awareness Composite": "awareness_composite",
+        "Range Anxiety (lower = better)": "range_anxiety_score",
+        "Anxiety − Knowledge Gap (lower = better)": "anxiety_minus_knowledge",
+    }
+    diverge_rows = []
+    for label, col in compare_cols.items():
+        high_val = filtered_df.loc[
+            filtered_df["ev_adoption_likelihood"] == "High", col
+        ].mean()
+        low_val = filtered_df.loc[
+            filtered_df["ev_adoption_likelihood"] == "Low", col
+        ].mean()
+        diverge_rows.append({"Factor": label, "High": high_val, "Low": low_val})
+    diverge_df = pd.DataFrame(diverge_rows)
+
+    fig_diverge = go.Figure()
+    fig_diverge.add_bar(
+        name="High Adopters",
+        y=diverge_df["Factor"],
+        x=diverge_df["High"],
+        orientation="h",
+        marker_color=COLOR_MAP["High"],
+    )
+    fig_diverge.add_bar(
+        name="Low Adopters",
+        y=diverge_df["Factor"],
+        x=-diverge_df["Low"],
+        orientation="h",
+        marker_color=COLOR_MAP["Low"],
+    )
+    fig_diverge.update_layout(
+        barmode="overlay",
+        template=PLOT_TEMPLATE,
+        legend_title="",
+        xaxis_title="← Low Adopters   |   High Adopters →",
+        title="What Actually Separates Adopters From Skeptics",
+    )
+    st.plotly_chart(fig_diverge, use_container_width=True)
+    st.caption("The anxiety-knowledge gap shows the widest split of any single factor.")
+
 st.divider()
 
 tab_demo, tab_econ, tab_infra, tab_psych, tab_synth = st.tabs(
@@ -168,6 +242,41 @@ with tab_demo:
         labels={"pct": "% of customers"},
     )
     st.plotly_chart(fig_city, use_container_width=True)
+
+    # Income boxplot above shows spread; this shows the adoption RATE directly per
+    # bracket, which is a more actionable "where's the cutoff" view for targeting.
+    income_bracket_df = filtered_df.copy()
+    income_bracket_df["income_bracket"] = pd.cut(
+        income_bracket_df["annual_income"],
+        bins=[0, 25000, 40000, 60000, 90000, float("inf")],
+        labels=["<25k", "25k-40k", "40k-60k", "60k-90k", "90k+"],
+    )
+    bracket_rate = (
+        income_bracket_df.groupby("income_bracket", observed=True)[
+            "ev_adoption_likelihood"
+        ]
+        .apply(lambda s: (s == "High").mean() * 100)
+        .reindex(["<25k", "25k-40k", "40k-60k", "60k-90k", "90k+"])
+        .reset_index()
+    )
+    bracket_rate.columns = ["income_bracket", "pct_high"]
+
+    fig_bracket = px.line(
+        bracket_rate,
+        x="income_bracket",
+        y="pct_high",
+        markers=True,
+        text="pct_high",
+        template=PLOT_TEMPLATE,
+        color_discrete_sequence=[COLOR_MAP["High"]],
+        title="% High Adoption by Income Bracket",
+        labels={"income_bracket": "Income bracket", "pct_high": "% High adoption"},
+    )
+    fig_bracket.update_traces(
+        texttemplate="%{text:.1f}%", textposition="top center", line=dict(width=3)
+    )
+    fig_bracket.update_yaxes(range=[0, 100])
+    st.plotly_chart(fig_bracket, use_container_width=True)
 
     st.caption("Income and city type separate adoption groups more clearly than age.")
 
@@ -287,6 +396,72 @@ with tab_infra:
         "Perceived range anxiety separates adoption groups more sharply than actual distance "
         "to the nearest station — perception appears to be a bigger barrier than physical access."
     )
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        # Interaction: does public accessibility compound with home charging, or does
+        # having one make the other redundant?
+        access_df = filtered_df.copy()
+        access_df["accessibility_band"] = pd.cut(
+            access_df["charging_station_accessibility"],
+            bins=[0, 4, 7, 10],
+            labels=["Low", "Medium", "High"],
+            include_lowest=True,
+        )
+        access_df["home_charging_label"] = access_df["home_charging_available"].map(
+            {0: "No", 1: "Yes"}
+        )
+        access_rate = (
+            access_df.groupby(
+                ["accessibility_band", "home_charging_label"], observed=True
+            )["ev_adoption_likelihood"]
+            .apply(lambda s: (s == "High").mean() * 100)
+            .reset_index(name="pct_high")
+        )
+        fig_access = px.bar(
+            access_rate,
+            x="accessibility_band",
+            y="pct_high",
+            color="home_charging_label",
+            barmode="group",
+            template=PLOT_TEMPLATE,
+            color_discrete_map={"No": COLOR_MAP["Low"], "Yes": COLOR_MAP["High"]},
+            title="Charging Accessibility × Home Charging",
+            labels={
+                "accessibility_band": "Public accessibility",
+                "pct_high": "% High adoption",
+                "home_charging_label": "Home charging",
+            },
+        )
+        st.plotly_chart(fig_access, use_container_width=True)
+        st.caption(
+            "Public accessibility and home charging compound — the two together beat either alone."
+        )
+
+    with col4:
+        # Cost vs. energy usage -- same energy consumption can still mean different
+        # charging cost, since electricity price itself varies by region/provider.
+        fig_cost_energy = px.scatter(
+            filtered_df,
+            x="monthly_energy_consumption_kwh",
+            y="monthly_charging_cost",
+            color="electricity_cost_per_kwh",
+            template=PLOT_TEMPLATE,
+            trendline="ols",
+            color_continuous_scale="Viridis",
+            opacity=0.5,
+            title="Charging Cost vs. Energy Consumption",
+            labels={
+                "monthly_energy_consumption_kwh": "Monthly energy (kWh)",
+                "monthly_charging_cost": "Monthly charging cost (₹)",
+                "electricity_cost_per_kwh": "₹/kWh",
+            },
+        )
+        st.plotly_chart(fig_cost_energy, use_container_width=True)
+        st.caption(
+            "Cost rises with energy use, but the electricity rate (color) explains why similar usage can cost different amounts."
+        )
 
 # --- Psychology & Awareness ---
 with tab_psych:
