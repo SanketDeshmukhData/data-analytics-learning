@@ -1,4 +1,4 @@
-"""EV Adoption Behavior Analytics Dashboard"""
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -13,11 +13,12 @@ st.set_page_config(
 ADOPTION_ORDER = ["Low", "Medium", "High"]
 COLOR_MAP = {"Low": "#e74c3c", "Medium": "#f5a623", "High": "#3ddc97"}
 PLOT_TEMPLATE = "plotly_dark"
+DATA_PATH = Path(__file__).parent / "ev_adoption_cleaned.csv"
 
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv("ev_adoption_cleaned.csv")
+    df = pd.read_csv(DATA_PATH)
     df["ev_adoption_likelihood"] = pd.Categorical(
         df["ev_adoption_likelihood"], categories=ADOPTION_ORDER, ordered=True
     )
