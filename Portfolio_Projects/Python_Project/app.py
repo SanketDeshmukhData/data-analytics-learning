@@ -1,7 +1,5 @@
 """EV Adoption Behavior Analytics Dashboard"""
 
-from pathlib import Path
-
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -13,16 +11,28 @@ st.set_page_config(
 )
 
 ADOPTION_ORDER = ["Low", "Medium", "High"]
-COLOR_MAP = {"Low": "#e74c3c", "Medium": "#f39c12", "High": "#2ecc71"}
-DATA_PATH = Path(__file__).parent / "ev_adoption_cleaned.csv"
+COLOR_MAP = {"Low": "#e74c3c", "Medium": "#f5a623", "High": "#3ddc97"}
+PLOT_TEMPLATE = "plotly_dark"
 
 
 @st.cache_data
 def load_data():
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv("ev_adoption_cleaned.csv")
     df["ev_adoption_likelihood"] = pd.Categorical(
         df["ev_adoption_likelihood"], categories=ADOPTION_ORDER, ordered=True
     )
+
+    # Composite/derived features -- combine correlated raw scores into single,
+    # sharper signals instead of treating each one as equally important.
+    df["awareness_composite"] = df[
+        [
+            "environmental_awareness_score",
+            "technology_affinity_score",
+            "government_incentive_awareness",
+        ]
+    ].mean(axis=1)
+    df["anxiety_minus_knowledge"] = df["range_anxiety_score"] - df["ev_knowledge_score"]
+
     return df
 
 
@@ -114,6 +124,7 @@ with tab_demo:
             category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
             color="ev_adoption_likelihood",
             color_discrete_map=COLOR_MAP,
+            template=PLOT_TEMPLATE,
             title="Age by Adoption Likelihood",
         )
         st.plotly_chart(fig_age, use_container_width=True)
@@ -126,6 +137,7 @@ with tab_demo:
             category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
             color="ev_adoption_likelihood",
             color_discrete_map=COLOR_MAP,
+            template=PLOT_TEMPLATE,
             title="Income by Adoption Likelihood",
         )
         st.plotly_chart(fig_income, use_container_width=True)
@@ -150,6 +162,7 @@ with tab_demo:
         color="ev_adoption_likelihood",
         category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
         color_discrete_map=COLOR_MAP,
+        template=PLOT_TEMPLATE,
         title="Adoption Likelihood % by City Type",
         labels={"pct": "% of customers"},
     )
@@ -180,6 +193,7 @@ with tab_econ:
         color="cost_type",
         barmode="group",
         category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
+        template=PLOT_TEMPLATE,
         title="Avg Monthly Fuel vs. Charging Cost, by Adoption Likelihood",
         labels={
             "amount": "₹ per month",
@@ -214,6 +228,7 @@ with tab_infra:
             category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
             color="ev_adoption_likelihood",
             color_discrete_map=COLOR_MAP,
+            template=PLOT_TEMPLATE,
             title="Distance to Nearest Station (actual km)",
         )
         st.plotly_chart(fig_dist, use_container_width=True)
@@ -226,6 +241,7 @@ with tab_infra:
             category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
             color="ev_adoption_likelihood",
             color_discrete_map=COLOR_MAP,
+            template=PLOT_TEMPLATE,
             title="Range Anxiety Score (perceived)",
         )
         st.plotly_chart(fig_anx, use_container_width=True)
@@ -257,6 +273,7 @@ with tab_infra:
         color="ev_adoption_likelihood",
         category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
         color_discrete_map=COLOR_MAP,
+        template=PLOT_TEMPLATE,
         title="Adoption Likelihood % by Home Charging Availability",
         labels={
             "pct": "% of customers",
@@ -274,6 +291,9 @@ with tab_infra:
 with tab_psych:
     st.subheader("Psychology & Awareness")
 
+    # Correlation ranking now includes the two composite features alongside the
+    # 6 raw scores, so we can see whether combining correlated signals actually
+    # produces a stronger single predictor than any individual score.
     score_cols = [
         "environmental_awareness_score",
         "technology_affinity_score",
@@ -281,12 +301,17 @@ with tab_psych:
         "battery_replacement_concern",
         "ev_knowledge_score",
         "government_incentive_awareness",
+        "awareness_composite",
+        "anxiety_minus_knowledge",
     ]
     target_numeric = filtered_df["ev_adoption_likelihood"].cat.codes
     correlations = (
         filtered_df[score_cols].corrwith(target_numeric).sort_values().reset_index()
     )
     correlations.columns = ["factor", "correlation"]
+    is_composite = correlations["factor"].isin(
+        ["awareness_composite", "anxiety_minus_knowledge"]
+    )
 
     fig_corr = px.bar(
         correlations,
@@ -294,10 +319,55 @@ with tab_psych:
         y="factor",
         orientation="h",
         title="Correlation of Readiness Scores with Adoption Likelihood",
-        color="correlation",
-        color_continuous_scale="Purples",
+        template=PLOT_TEMPLATE,
+        color=is_composite.map({True: "Composite", False: "Raw score"}),
+        color_discrete_map={"Composite": "#8B7CF6", "Raw score": "#5A5F73"},
+        labels={"color": ""},
     )
     st.plotly_chart(fig_corr, use_container_width=True)
+    st.caption(
+        "The anxiety-knowledge gap and awareness composite (highlighted) combine several "
+        "correlated raw scores into one signal each — both rank among the strongest predictors."
+    )
+
+    # Interaction matrix: does knowledge offset anxiety, or do they act independently?
+    matrix_df = filtered_df.copy()
+    matrix_df["Anxiety"] = pd.cut(
+        matrix_df["range_anxiety_score"],
+        bins=[0, 3, 7, 10],
+        labels=["Low", "Medium", "High"],
+        include_lowest=True,
+    )
+    matrix_df["Knowledge"] = pd.cut(
+        matrix_df["ev_knowledge_score"],
+        bins=[0, 3, 7, 10],
+        labels=["Low", "Medium", "High"],
+        include_lowest=True,
+    )
+    matrix = (
+        matrix_df.groupby(["Anxiety", "Knowledge"], observed=True)[
+            "ev_adoption_likelihood"
+        ]
+        .apply(lambda s: (s == "High").mean() * 100)
+        .unstack()
+        .reindex(index=["High", "Medium", "Low"], columns=["Low", "Medium", "High"])
+    )
+    fig_matrix = px.imshow(
+        matrix,
+        text_auto=".0f",
+        template=PLOT_TEMPLATE,
+        aspect="auto",
+        color_continuous_scale=[[0, "#e74c3c"], [0.5, "#1B1F2B"], [1, "#3ddc97"]],
+        labels=dict(color="% High Adoption"),
+        title="Range Anxiety × EV Knowledge — % High Adoption",
+    )
+    fig_matrix.update_layout(xaxis_title="EV Knowledge", yaxis_title="Range Anxiety")
+    st.plotly_chart(fig_matrix, use_container_width=True)
+    st.caption(
+        "Knowledge offsets anxiety more than anxiety alone predicts adoption: high-anxiety "
+        "customers with high knowledge still convert at a meaningful rate, while "
+        "high-anxiety/low-knowledge customers barely convert at all."
+    )
 
     exp_props = (
         (
@@ -326,10 +396,14 @@ with tab_psych:
         color="ev_adoption_likelihood",
         category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
         color_discrete_map=COLOR_MAP,
+        template=PLOT_TEMPLATE,
         title="Adoption Likelihood % by Previous EV Experience",
         labels={"pct": "% of customers", "previous_ev_experience": ""},
     )
     st.plotly_chart(fig_exp, use_container_width=True)
+    st.caption(
+        "Prior EV experience is a real but moderate lever — smaller than the anxiety-knowledge gap above."
+    )
 
 # --- Best-fit segments ---
 with tab_synth:
@@ -378,11 +452,15 @@ with tab_synth:
                 "pct_high": "% High adoption likelihood",
                 "segment_label": "Segment",
             },
+            template=PLOT_TEMPLATE,
             color="pct_high",
-            color_continuous_scale="Greens",
+            color_continuous_scale=["#5A5F73", "#3ddc97"],
             hover_data=["segment_size"],
         )
         st.plotly_chart(fig_seg, use_container_width=True)
+        st.caption(
+            "Urban, home-charging-enabled segments dominate the top of this ranking across vehicle types."
+        )
 
         st.dataframe(
             top_segments[
