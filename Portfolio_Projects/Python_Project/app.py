@@ -97,11 +97,19 @@ if filtered_df.empty:
 pct_high = (filtered_df["ev_adoption_likelihood"] == "High").mean() * 100
 avg_income = filtered_df["annual_income"].mean()
 avg_range_anxiety = filtered_df["range_anxiety_score"].mean()
+pct_high_anxiety = (filtered_df["range_anxiety_score"] >= 7).mean() * 100
+pct_home_charging = (filtered_df["home_charging_available"] == 1).mean() * 100
+avg_ev_knowledge = filtered_df["ev_knowledge_score"].mean()
 
-kpi1, kpi2, kpi3 = st.columns(3)
+kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
 kpi1.metric("Customers (filtered)", f"{len(filtered_df):,}")
 kpi2.metric("% High adoption likelihood", f"{pct_high:.1f}%")
-kpi3.metric("Avg. annual income", f"₹{avg_income:,.0f}")
+kpi3.metric(
+    "High range anxiety", f"{pct_high_anxiety:.1f}%", help="Share scoring 7+ out of 10"
+)
+kpi4.metric("Home charging access", f"{pct_home_charging:.1f}%")
+kpi5.metric("Avg. annual income", f"₹{avg_income:,.0f}")
+kpi6.metric("Avg. EV knowledge", f"{avg_ev_knowledge:.1f} / 10")
 
 st.markdown("")
 ov1, ov2 = st.columns(2)
@@ -129,9 +137,15 @@ with ov1:
 
 with ov2:
     # Diverging bar: compare High-adopter vs Low-adopter averages on the factors
-    # that matter most, including the composite features -- one bar extends right
-    # (High), the other left (Low, plotted as a negative value), so the visual gap
-    # between the two tips shows how much a factor actually separates the groups.
+    # that matter most, including the composite features. Values are standardized
+    # (z-scored against the whole filtered population) before plotting -- raw
+    # units aren't comparable across factors with different natural scales (a
+    # 0-10 score vs. a difference-of-two-scores metric with wider variance), so a
+    # raw-unit version understates factors like the anxiety-knowledge gap despite
+    # them being the strongest correlates elsewhere on this dashboard. Bar
+    # direction is then forced consistently -- High always right, Low always left
+    # -- via abs(), since each factor's "good" direction differs (e.g. lower
+    # anxiety is good, higher knowledge is good).
     compare_cols = {
         "EV Knowledge": "ev_knowledge_score",
         "Awareness Composite": "awareness_composite",
@@ -140,13 +154,16 @@ with ov2:
     }
     diverge_rows = []
     for label, col in compare_cols.items():
+        pop_mean, pop_std = filtered_df[col].mean(), filtered_df[col].std()
         high_val = filtered_df.loc[
             filtered_df["ev_adoption_likelihood"] == "High", col
         ].mean()
         low_val = filtered_df.loc[
             filtered_df["ev_adoption_likelihood"] == "Low", col
         ].mean()
-        diverge_rows.append({"Factor": label, "High": high_val, "Low": low_val})
+        z_high = (high_val - pop_mean) / pop_std
+        z_low = (low_val - pop_mean) / pop_std
+        diverge_rows.append({"Factor": label, "High": abs(z_high), "Low": abs(z_low)})
     diverge_df = pd.DataFrame(diverge_rows)
 
     fig_diverge = go.Figure()
@@ -168,11 +185,16 @@ with ov2:
         barmode="overlay",
         template=PLOT_TEMPLATE,
         legend_title="",
-        xaxis_title="← Low Adopters   |   High Adopters →",
+        xaxis_title="← Low Adopters   |   High Adopters →  (std. deviations from population mean)",
         title="What Actually Separates Adopters From Skeptics",
     )
     st.plotly_chart(fig_diverge, use_container_width=True)
-    st.caption("The anxiety-knowledge gap shows the widest split of any single factor.")
+    st.caption(
+        "Values are standardized (z-scored) for fair comparison across factors on different "
+        "scales. The anxiety-knowledge gap shows the widest standardized separation of any "
+        "single factor here — matching its #1 rank in both the correlation chart and the "
+        "underlying model's feature importance."
+    )
 
 st.divider()
 
@@ -545,40 +567,38 @@ with tab_psych:
         "high-anxiety/low-knowledge customers barely convert at all."
     )
 
-    exp_props = (
-        (
-            pd.crosstab(
-                filtered_df["previous_ev_experience"],
-                filtered_df["ev_adoption_likelihood"],
-                normalize="index",
-            )[ADOPTION_ORDER]
-            * 100
-        )
-        .reset_index()
-        .melt(
-            id_vars="previous_ev_experience",
-            var_name="ev_adoption_likelihood",
-            value_name="pct",
-        )
-    )
-    exp_props["previous_ev_experience"] = exp_props["previous_ev_experience"].map(
+    exp_df = filtered_df.copy()
+    exp_df["previous_ev_experience"] = exp_df["previous_ev_experience"].map(
         {0: "No prior experience", 1: "Prior experience"}
     )
-
+    exp_df["home_charging_label"] = exp_df["home_charging_available"].map(
+        {0: "No", 1: "Yes"}
+    )
+    exp_rate = (
+        exp_df.groupby(
+            ["previous_ev_experience", "home_charging_label"], observed=True
+        )["ev_adoption_likelihood"]
+        .apply(lambda s: (s == "High").mean() * 100)
+        .reset_index(name="pct_high")
+    )
     fig_exp = px.bar(
-        exp_props,
+        exp_rate,
         x="previous_ev_experience",
-        y="pct",
-        color="ev_adoption_likelihood",
-        category_orders={"ev_adoption_likelihood": ADOPTION_ORDER},
-        color_discrete_map=COLOR_MAP,
+        y="pct_high",
+        color="home_charging_label",
+        barmode="group",
         template=PLOT_TEMPLATE,
-        title="Adoption Likelihood % by Previous EV Experience",
-        labels={"pct": "% of customers", "previous_ev_experience": ""},
+        color_discrete_map={"No": COLOR_MAP["Low"], "Yes": COLOR_MAP["High"]},
+        title="Previous EV Experience × Home Charging",
+        labels={
+            "previous_ev_experience": "",
+            "pct_high": "% High adoption",
+            "home_charging_label": "Home charging",
+        },
     )
     st.plotly_chart(fig_exp, use_container_width=True)
     st.caption(
-        "Prior EV experience is a real but moderate lever — smaller than the anxiety-knowledge gap above."
+        "The two enablers stack — prior experience plus home charging beats either alone."
     )
 
 # --- Best-fit segments ---
